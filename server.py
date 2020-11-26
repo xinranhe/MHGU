@@ -14,8 +14,12 @@ def index_page():
 
 @app.route('/search', methods=['POST'])
 def search():
-    results = search_equipment(json.loads(request.form["request"]))
-    return json.dumps(results)
+    try:
+        results = search_equipment(json.loads(request.form["request"]))
+        return json.dumps(results)
+    except:
+        results = {"results": []}
+        return json.dumps(results)
 
 # run the application
 if __name__ == "__main__":
