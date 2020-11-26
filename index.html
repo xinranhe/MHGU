@@ -76,6 +76,7 @@ table, th, td {
 		
 		request["stone_hole"] = parseInt($('#stone_slots').val())
 		request["weapon_hole"] = parseInt($('#weapon_slots').val())
+		$("#result").html("计算中")
 		$.post("/search", {"request": JSON.stringify(request)},
 		  function(data, status){
 		  	results = JSON.parse(data)["results"]
