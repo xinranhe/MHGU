@@ -10,6 +10,8 @@ SKILL_NAME2ID = {}
 SKILL_ID2NAME = {}
 ACTIVATION_TO_SKILL = {}
 ALL_GEMS = []
+SKILL_TO_GEMS = defaultdict(list)
+SKILL_MAX_GAIN = defaultdict(float)
 
 MAX_SET = 20
 
@@ -38,14 +40,18 @@ def load_skills():
 
 
 def load_gems():
-    gems = json.load(open("data/gems.json", "r"))
+    gems = json.load(open("data/gems.json","r"))
     for gem in gems["data"]:
         skills = {}
         if gem["effect1"] in SKILL_NAME2ID:
-            skills[SKILL_NAME2ID[gem["effect1"]]] = gem["effect1_num"]
+            skill_id = SKILL_NAME2ID[gem["effect1"]]
+            skills[skill_id] = gem["effect1_num"]
+            SKILL_MAX_GAIN[skill_id] = max(SKILL_MAX_GAIN[skill_id], 1.0 * gem["effect1_num"] / gem["hole"])
         if gem["effect2"] in SKILL_NAME2ID:
-            skills[SKILL_NAME2ID[gem["effect2"]]] = gem["effect2_num"]
-        ALL_GEMS.append([gem["name_cn"], skills, gem["hole"]]) 
+            skill_id = SKILL_NAME2ID[gem["effect2"]]
+            skills[skill_id] = gem["effect2_num"]
+            SKILL_MAX_GAIN[skill_id] = max(SKILL_MAX_GAIN[skill_id], 1.0 * gem["effect2_num"] / gem["hole"])
+        ALL_GEMS.append([gem["name_cn"], skills, gem["hole"]])
 
 
 def init():
@@ -94,65 +100,30 @@ def search_candidate(input_items, required_skills, require_type):
 def prefilter_gem(required_skills):
     prefiltered_gems = []
     for gem in ALL_GEMS:
-            is_useful = False
-            for skill in required_skills:
-                if gem[1].get(skill, 0) > 0:
-                    is_useful = True
-                    break
-            if is_useful:
-                prefiltered_gems.append(gem)
-    return prefiltered_gems
-
-
-def prepare_gem_search(equipments, required_skills, required_points, stone_points, stone_hole, weapon_hole, prefilter_gems):
-    hole_counts = [0] * 4 # holes for 1, 2, 3
-    hole_counts[stone_hole] += 1
-    hole_counts[weapon_hole] += 1
-    
-    left_over_points = required_points[:]
-    num_skills = len(left_over_points)
-    
-    # count stone skill
-    for i in range(num_skills):
-        left_over_points[i] -= stone_points[i]
-        
-    for equip in equipments:
-        hole_counts[equip[1][-1]] += 1
-        for i in range(num_skills):
-            left_over_points[i] -= equip[1][i]
-    
-    # new requirement
-    new_required_skills = []
-    new_required_points = []
-    for i in range(num_skills):
-        if left_over_points[i] > 0:
-            new_required_skills.append(required_skills[i])
-            new_required_points.append(left_over_points[i])
-    
-    # filter useful gems
-    useful_gems = []
-    max_single_gain = [0.0] * len(new_required_skills)
-    for gem in prefilter_gems:
         is_useful = False
-        gen_skill = [0] * len(new_required_skills)
-        for i, skill in enumerate(new_required_skills):
+        gen_skill = [0] * len(required_skills)
+        for i, skill in enumerate(required_skills):
             p = gem[1].get(skill, 0)
             if p > 0:
                 is_useful = True
                 gen_skill[i] = p
-                max_single_gain[i] = max(max_single_gain[i], 1.0 * p / gem[2])
+                break
         if is_useful:
-            useful_gems.append([gem[0], gen_skill, gem[2]])
-    
+            prefiltered_gems.append([gem[0], gen_skill, gem[2]])
+    return prefiltered_gems
+
+
+def is_greedy_possible(left_over_points, hole_counts, max_single_gain):
     # greedy prune
     total_holes = hole_counts[1] + 2* hole_counts[2] + 3 * hole_counts[3]
-    for require, gain in zip(new_required_points, max_single_gain):
+    for require, gain in zip(left_over_points, max_single_gain):
+        if require <= 0:
+            continue
         require_num = int(math.ceil(require / gain))
         total_holes -= require_num
         if total_holes < 0:
-            return False, None, None, None, None
-    
-    return True, [max(v, 0) for v in left_over_points], hole_counts, new_required_points, useful_gems
+            return False
+    return True
 
 
 def search_gem(required_points, hole_counts, useful_gems, result, cache):
@@ -164,7 +135,7 @@ def search_gem(required_points, hole_counts, useful_gems, result, cache):
     if is_done:
         return True
     
-    state = tuple(required_points + hole_counts)
+    state = tuple([max(v, 0) for v in required_points] + hole_counts[1:])
     if state in cache:
         return cache[state]
     
@@ -195,6 +166,7 @@ def search_gem(required_points, hole_counts, useful_gems, result, cache):
                     hole_counts[h - gem[2]] -= 1
     return False
 
+
 def summarize_gems(gems):
     count = defaultdict(int)
     for gem in gems:
@@ -203,6 +175,20 @@ def summarize_gems(gems):
     for gem in sorted(count.keys()):
         results.append("%s X %d" % (gem, count[gem]))
     return ", ".join(results)
+
+
+def add_equip(left_over_points, hole_counts, equipment):
+    for i in range(len(left_over_points)):
+        left_over_points[i] -= equipment[1][i]
+    hole_counts[equipment[1][-1]] += 1
+
+
+def remove_equip(left_over_points, hole_counts, equipment):
+    for i in range(len(left_over_points)):
+        left_over_points[i] += equipment[1][i]
+    hole_counts[equipment[1][-1]] -= 1
+
+
 
 """
 Request dict
@@ -252,27 +238,49 @@ def search_equipment(request_dict):
     yao_equips = sorted(search_candidate(ALL_EQUIPMENTS["yao"], required_skills, is_gunner), key=lambda x: -x[-1])
     jiao_equips = sorted(search_candidate(ALL_EQUIPMENTS["jiao"], required_skills, is_gunner), key=lambda x: -x[-1])
 
-    prefilered_gems = prefilter_gem(required_skills)
+    prefilered_gems = sorted(prefilter_gem(required_skills), key=lambda x: -x[-1])
+    max_single_gain = [SKILL_MAX_GAIN[s] for s in required_skills]
+
+    # hole counts
+    hole_counts = [0] * 4
+    hole_counts[weapon_hole] += 1
+    hole_counts[stone_hole] += 1
+
+    # loeft over skill points
+    left_over_points = required_points[:]
+    for i in range(len(left_over_points)):
+        left_over_points[i] -= stone_points[i]
+
     results = []
     for tou in tou_equips:
+        add_equip(left_over_points, hole_counts, tou)
         for wan in wan_equips:
+            add_equip(left_over_points, hole_counts, wan)
             for xiong in xiong_equips:
+                add_equip(left_over_points, hole_counts, xiong)
                 for yao in yao_equips:
+                    add_equip(left_over_points, hole_counts, yao)
                     for jiao in jiao_equips:
-                        equipments = [tou, wan, xiong, yao, jiao]
-                        is_possible, left_over_points, hole_counts, new_required_points, useful_gems = prepare_gem_search(equipments, required_skills, required_points, stone_points, stone_hole, weapon_hole,prefilered_gems)
-                        if is_possible:
+                        add_equip(left_over_points, hole_counts, jiao)
+                        if is_greedy_possible([max(v, 0) for v in left_over_points], hole_counts, max_single_gain):
                             result_gems = []
+                            temp_points = left_over_points[:]
+                            temp_holes = hole_counts[:]
+                            # cache for DP
                             cahce = {}
-                            useful_gems = sorted(useful_gems, key=lambda x: -x[2])
-                            if search_gem(new_required_points, hole_counts, useful_gems, result_gems, cahce):
-                                find_equipments = [e[0] for e in equipments]
+                            search_result = search_gem(temp_points, temp_holes, prefilered_gems, result_gems, cahce)
+                            if search_result:
                                 results.append({
                                     "total_init_def": tou[-2]+wan[-2]+xiong[-2]+yao[-2]+jiao[-2],
                                     "total_def": tou[-1]+wan[-1]+xiong[-1]+yao[-1]+jiao[-1],
-                                    "equipments": find_equipments,
+                                    "equipments": [tou[0], wan[0], xiong[0], yao[0], jiao[0]],
                                     "gems": summarize_gems(result_gems)
                                 })
                                 if len(results) >= MAX_SET:
                                     return {"results": results}
+                        remove_equip(left_over_points, hole_counts, jiao)
+                    remove_equip(left_over_points, hole_counts, yao)
+                remove_equip(left_over_points, hole_counts, xiong)
+            remove_equip(left_over_points, hole_counts, wan)
+        remove_equip(left_over_points, hole_counts, tou)
     return {"results": results}
