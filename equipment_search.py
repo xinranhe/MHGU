@@ -119,6 +119,8 @@ def is_greedy_possible(left_over_points, hole_counts, max_single_gain):
     for require, gain in zip(left_over_points, max_single_gain):
         if require <= 0:
             continue
+        if max_single_gain < 1e-3:
+            return False
         require_num = int(math.ceil(require / gain))
         total_holes -= require_num
         if total_holes < 0:
@@ -230,7 +232,9 @@ def search_equipment(request_dict):
     for key in required_point_dict.keys():
         required_points[id2dim[key]] = required_point_dict[key]
     for key in stone_skills:
-        stone_points[id2dim[SKILL_NAME2ID[key]]] = stone_skills[key]
+        if SKILL_NAME2ID[key] in id2dim:
+            stone_points[id2dim[SKILL_NAME2ID[key]]] = stone_skills[key]
+
 
     tou_equips = sorted(search_candidate(ALL_EQUIPMENTS["tou"], required_skills, -1), key=lambda x: -x[-1])
     wan_equips = sorted(search_candidate(ALL_EQUIPMENTS["wan"], required_skills, is_gunner), key=lambda x: -x[-1])
