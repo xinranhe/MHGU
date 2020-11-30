@@ -6,10 +6,18 @@ import math
 PART_NAMES = ['tou', 'wan', 'xiong', 'yao', 'jiao']
 
 ALL_EQUIPMENTS = {}
+EQUPMENT_ID2INFO = {}
+
 SKILL_NAME2ID = {}
 SKILL_ID2NAME = {}
+
 ACTIVATION_TO_SKILL = {}
+ACTIVATION_ID2NAME = {}
+ACTIVATION_NAME2ID = {}
+
 ALL_GEMS = []
+GEM_ID2INFO = {}
+
 SKILL_TO_GEMS = defaultdict(list)
 SKILL_MAX_GAIN = defaultdict(float)
 
@@ -24,8 +32,8 @@ def load_equipments():
                 skill_dict = {}
                 for skill in item["skillArray"]:
                     skill_dict[skill["skillId"]] = skill.get("skillNum", 0)
-                name = "%s (%s/%s)" % (item["name_cn"], item["name"], item["name_en"])
-                items.append([name, skill_dict, item["hole"], item["type"], item["initDefense"], item["maxDefense"]])
+                items.append([item["id"], skill_dict, item["hole"], item["type"], int(item["gender"]), item["maxDefense"]])
+                EQUPMENT_ID2INFO[item["id"]] = [skill_dict, item["name_cn"]]
         ALL_EQUIPMENTS[part] = items
 
 
@@ -51,14 +59,21 @@ def load_gems():
             skill_id = SKILL_NAME2ID[gem["effect2"]]
             skills[skill_id] = gem["effect2_num"]
             SKILL_MAX_GAIN[skill_id] = max(SKILL_MAX_GAIN[skill_id], 1.0 * gem["effect2_num"] / gem["hole"])
-        ALL_GEMS.append([gem["name_cn"], skills, gem["hole"]])
+        ALL_GEMS.append([gem["id"], skills, gem["hole"]])
+        GEM_ID2INFO[gem["id"]] = [skills, gem["name_cn"]]
+
+def load_activations():
+    activations = json.load(open("data/activations.json","r"))
+    for activtion in activations["data"]:
+        ACTIVATION_ID2NAME[activtion["id"]] = activtion["skillFadong_cn"]
+        ACTIVATION_NAME2ID[activtion["skillFadong_cn"]] = activtion["id"]
 
 
 def init():
     load_equipments()
     load_skills()
     load_gems()
-
+    load_activations()
 
 def isDominate(la, lb):
     for a, b in zip(la, lb):
@@ -66,11 +81,18 @@ def isDominate(la, lb):
             return False
     return True
 
-
-def search_candidate(input_items, required_skills, require_type):
+"""
+require_type: 0 melee 1 range
+require_gender: 0 male 1 female
+"""
+def search_candidate(input_items, required_skills, require_type, require_gender):
     selected_items = []
     for item in input_items:
-        if require_type != -1 and item[-3] !=  require_type:
+        # filter by type
+        if require_type != -1 and item[3] != require_type:
+            continue
+        # filter by gender
+        if item[4] != 0 and item[4] != require_gender + 1:
             continue
         current_item = []
         total = 0
@@ -93,7 +115,7 @@ def search_candidate(input_items, required_skills, require_type):
             continue
 
         selected_items = [sitem for sitem in selected_items if not isDominate(current_item, sitem[1])]
-        selected_items.append([item[0], current_item, item[-2], item[-1]])
+        selected_items.append([item[0], current_item, item[-1]])
     return selected_items
 
 
@@ -169,14 +191,69 @@ def search_gem(required_points, hole_counts, useful_gems, result, cache):
     return False
 
 
-def summarize_gems(gems):
-    count = defaultdict(int)
-    for gem in gems:
-        count[gem] += 1
-    results = []
-    for gem in sorted(count.keys()):
-        results.append("%s X %d" % (gem, count[gem]))
-    return ", ".join(results)
+def acc_skill_dict(skill_dict, new_skills):
+    for k, v in new_skills.items():
+        skill_dict[k] += v
+
+        
+def skill_dict2arr(skill_dict):
+    skills = []
+    for skill_id, skill_num in skill_dict.items():
+        skills.append({
+            "id": skill_id,
+            "name_cn": SKILL_ID2NAME[skill_id],
+            "num": skill_num
+        })
+        
+    return sorted(skills, key=lambda x: -x["num"])
+    
+
+def generate_result(equipment_ids, gem_ids, stone_skills, total_def):
+    result = {}
+    total_skills = defaultdict(int)
+    # equip result
+    for equip_id, part in zip(equipment_ids, PART_NAMES):
+        equip_info = EQUPMENT_ID2INFO[equip_id]
+        acc_skill_dict(total_skills, equip_info[0])
+        result[part] = {
+            "id": equip_id,
+            "name_cn": equip_info[1],
+            "skills": skill_dict2arr(equip_info[0]),
+        }
+        
+    # charm result
+    acc_skill_dict(total_skills, stone_skills)
+    result["charm"] = skill_dict2arr(stone_skills)
+    
+    # decoration result
+    decoration_skills = defaultdict(int)
+    gem_count = defaultdict(int)
+    for gem_id in gem_ids:
+        gem_count[gem_id] += 1
+    jewels = []
+    for gid, count in gem_count.items():
+        gem_info = GEM_ID2INFO[gid]
+        for i in range(count):
+            acc_skill_dict(decoration_skills, gem_info[0])
+        jewels.append({
+            "id": gid,
+            "name_cn": gem_info[1],
+            "num": count,
+        })
+    result["decoration"] = {
+        "jewels": jewels,
+        "skills": skill_dict2arr(decoration_skills)
+    }
+    acc_skill_dict(total_skills, decoration_skills)
+    
+    # overall skills
+    result["skills"] = skill_dict2arr(total_skills)
+    
+    # total defense used for sort
+    result["total_def"] = total_def
+    
+    return result
+
 
 
 def add_equip(left_over_points, hole_counts, equipment):
@@ -191,35 +268,42 @@ def remove_equip(left_over_points, hole_counts, equipment):
     hole_counts[equipment[1][-1]] -= 1
 
 
-
 """
-Request dict
+Test request
 {
-  "required_activated_skills": [
-    "洞悉+2",
-    "弱点特效",
-    "贯通弹・贯通箭UP",
-    "超会心",
-    "弹导强化"
+  "skillEffect": [
+    "5fb0c2e0d8c2f51f1bb39dc9",
+    "5fb0c2e0d8c2f51f1bb39d9d",
+    "5fb0c2e0d8c2f51f1bb39e5a",
+    "5fb0c2e0d8c2f51f1bb39dae",
+    "5fb0c2e0d8c2f51f1bb39e31"
   ],
-  "stone_skills": {
-    "痛击": 6
-  },
-  "stone_hole": 3,
-  "weapon_hole": 1,
-  "is_gunner": 1
+  "stone_skills": [
+      {
+          "skillId": "5f87e09412c40c0c5bcfe760",
+          "skillNum": 6
+      }
+  ],
+  "hushiHole": 3,
+  "weaponHole": 1,
+  "type": 1,
+  "gender": 0,
 }
-""" 
+"""
 def search_equipment(request_dict):
-    required_activated_skills = request_dict["required_activated_skills"]
-    stone_skills = request_dict["stone_skills"]
-    stone_hole = request_dict["stone_hole"]
-    weapon_hole = request_dict["weapon_hole"]
-    is_gunner = request_dict["is_gunner"]
-
+    required_activated_skills = request_dict["skillEffect"]
+    stone_skills = {}
+    for stone in request_dict["stone_skills"]:
+        stone_skills[stone["skillId"]] = stone["skillNum"]
+    stone_hole = request_dict["hushiHole"]
+    weapon_hole = request_dict["weaponHole"]
+    require_type = request_dict["type"]
+    require_gender = request_dict["gender"]
+    
     required_point_dict = defaultdict(int)
     for activated_skill in required_activated_skills:
-        required_point_dict[ACTIVATION_TO_SKILL[activated_skill][0]] += ACTIVATION_TO_SKILL[activated_skill][1]
+        activated_skill_name = ACTIVATION_ID2NAME[activated_skill]
+        required_point_dict[ACTIVATION_TO_SKILL[activated_skill_name][0]] += ACTIVATION_TO_SKILL[activated_skill_name][1]
 
     id2dim = {}
     required_skills = []
@@ -232,15 +316,15 @@ def search_equipment(request_dict):
     for key in required_point_dict.keys():
         required_points[id2dim[key]] = required_point_dict[key]
     for key in stone_skills:
-        if SKILL_NAME2ID[key] in id2dim:
-            stone_points[id2dim[SKILL_NAME2ID[key]]] = stone_skills[key]
+        if key in id2dim:
+            stone_points[id2dim[key]] = stone_skills[key]
 
 
-    tou_equips = sorted(search_candidate(ALL_EQUIPMENTS["tou"], required_skills, -1), key=lambda x: -x[-1])
-    wan_equips = sorted(search_candidate(ALL_EQUIPMENTS["wan"], required_skills, is_gunner), key=lambda x: -x[-1])
-    xiong_equips = sorted(search_candidate(ALL_EQUIPMENTS["xiong"], required_skills, is_gunner), key=lambda x: -x[-1])
-    yao_equips = sorted(search_candidate(ALL_EQUIPMENTS["yao"], required_skills, is_gunner), key=lambda x: -x[-1])
-    jiao_equips = sorted(search_candidate(ALL_EQUIPMENTS["jiao"], required_skills, is_gunner), key=lambda x: -x[-1])
+    tou_equips = sorted(search_candidate(ALL_EQUIPMENTS["tou"], required_skills, -1, require_gender), key=lambda x: -x[-1])
+    wan_equips = sorted(search_candidate(ALL_EQUIPMENTS["wan"], required_skills, require_type, require_gender), key=lambda x: -x[-1])
+    xiong_equips = sorted(search_candidate(ALL_EQUIPMENTS["xiong"], required_skills, require_type, require_gender), key=lambda x: -x[-1])
+    yao_equips = sorted(search_candidate(ALL_EQUIPMENTS["yao"], required_skills, require_type, require_gender), key=lambda x: -x[-1])
+    jiao_equips = sorted(search_candidate(ALL_EQUIPMENTS["jiao"], required_skills, require_type, require_gender), key=lambda x: -x[-1])
 
     prefilered_gems = sorted(prefilter_gem(required_skills), key=lambda x: -x[-1])
     max_single_gain = [SKILL_MAX_GAIN[s] for s in required_skills]
@@ -267,24 +351,21 @@ def search_equipment(request_dict):
                     for jiao in jiao_equips:
                         add_equip(left_over_points, hole_counts, jiao)
                         if is_greedy_possible([max(v, 0) for v in left_over_points], hole_counts, max_single_gain):
+                            cahce = {}
                             result_gems = []
                             temp_points = left_over_points[:]
                             temp_holes = hole_counts[:]
                             # cache for DP
-                            cahce = {}
                             search_result = search_gem(temp_points, temp_holes, prefilered_gems, result_gems, cahce)
                             if search_result:
-                                results.append({
-                                    "total_init_def": tou[-2]+wan[-2]+xiong[-2]+yao[-2]+jiao[-2],
-                                    "total_def": tou[-1]+wan[-1]+xiong[-1]+yao[-1]+jiao[-1],
-                                    "equipments": [tou[0], wan[0], xiong[0], yao[0], jiao[0]],
-                                    "gems": summarize_gems(result_gems)
-                                })
+                                equpment_ids = [tou[0], wan[0], xiong[0], yao[0], jiao[0]]
+                                total_def = sum([tou[-1], wan[-1], xiong[-1], yao[-1], jiao[-1]])
+                                results.append(generate_result(equpment_ids, result_gems, stone_skills, total_def))
                                 if len(results) >= MAX_SET:
-                                    return {"results": results}
+                                    return {"results": sorted(results, key=lambda x: -x["total_def"])}
                         remove_equip(left_over_points, hole_counts, jiao)
                     remove_equip(left_over_points, hole_counts, yao)
                 remove_equip(left_over_points, hole_counts, xiong)
             remove_equip(left_over_points, hole_counts, wan)
         remove_equip(left_over_points, hole_counts, tou)
-    return {"results": results}
+    return {"results": sorted(results, key=lambda x: -x["total_def"])}
