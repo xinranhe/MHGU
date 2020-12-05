@@ -126,10 +126,11 @@ def prefilter_gem(required_skills):
         gen_skill = [0] * len(required_skills)
         for i, skill in enumerate(required_skills):
             p = gem[1].get(skill, 0)
+            if p != 0:
+                gen_skill[i] = p
             if p > 0:
                 is_useful = True
                 gen_skill[i] = p
-                break
         if is_useful:
             prefiltered_gems.append([gem[0], gen_skill, gem[2]])
     return prefiltered_gems
